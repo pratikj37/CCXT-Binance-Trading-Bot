@@ -2,3 +2,4 @@ ccxt
 ta
 schedule
 pandas
+numpy

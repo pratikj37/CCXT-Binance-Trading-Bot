@@ -1,9 +1,16 @@
 import ccxt
 import config
+import schedule
 import pandas as pd
 pd.set_option('display.max_rows', None)
 
-import schedule
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np
+from datetime import datetime
+import time
+
 import ta
 from ta.volatility import BollingerBands, AverageTrueRange
 
@@ -13,130 +20,99 @@ exchange = ccxt.binance({
 })
 
 #markets = exchange.load_markets()
-bars = exchange.fetch_ohlcv('BNB/USDT',timeframe='15m', limit=300)
+#bars = exchange.fetch_ohlcv('BNB/USDT',timeframe='15m', limit=300)
 
-df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+#data = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+#data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
 
-def tr(df):
-    df['previous_close'] = df['close'].shift(1)
-    df['high-low'] = df['high'] - df['low']
-    df['high-pc']= abs(df['high'] - df['previous_close'])
-    df['low-pc']= abs(df['low'] - df['previous_close'])
+def tr(data):
+    data['previous_close'] = data['close'].shift(1)
+    data['high-low'] = abs(data['high'] - data['low'])
+    data['high-pc']= abs(data['high'] - data['previous_close'])
+    data['low-pc']= abs(data['low'] - data['previous_close'])
 
-    tr = df[['high-low', 'high-pc', 'low-pc']].max(axis=1)
+    tr = data[['high-low', 'high-pc', 'low-pc']].max(axis=1)
 
     return tr 
 
 
-def atr(df, period=14):
-    df['tr'] =tr(df)
-    the_atr = df['tr'].rolling(period).mean()
+def atr(data, period):
+    data['tr'] =tr(data)
+    the_atr = data['tr'].rolling(period).mean()
 
-    print("calculate average true range")
-
-    
     return the_atr
 
-#df['atr'] = the_atr
-#print(df)
 
 
-def supertrend(df, period=7, multiplier=3):
+def supertrend(df, period=7,atr_multiplier=3):
     hl2 = (df['high'] + df['low']) /2 
     #print("calculating supertrend")
     #basic upperband = ((high + low) / 2) + (multiplier * atr)
     #basic lowerband = ((high + low) / 2) - (multiplier * atr)
-    df['atr'] = atr(df, period=period)
-    df['basic_upperband'] = ((df['high'] + df['low']) / 2) + (multiplier * df['atr'])
-    df['basic_lowerband'] = ((df['high'] + df['low']) / 2) - (multiplier * df['atr'])
+    df['atr'] = atr(df, period)
+    df['upperband'] = hl2 + (atr_multiplier * df['atr'])
+    df['lowerband'] = hl2 - (atr_multiplier * df['atr'])
     df['in_uptrend'] = True
 
     for current in range(1, len(df.index)):
-        previous = current-1
+        previous = current - 1
 
         if df['close'][current] > df['upperband'][previous]:
             df['in_uptrend'][current] = True
-        elif df['close'][current] < df['upperband'][previous]:
+        elif df['close'][current] < df['lowerband'][previous]:
             df['in_uptrend'][current] = False
         else:
-            df['in_previous'][current] = df['in_uptrend'][previous]
+            df['in_uptrend'][current] = df['in_uptrend'][previous]
 
             if df['in_uptrend'][current] and df['lowerband'][current] < df['lowerband'][previous]:
                 df['lowerband'][current] = df['lowerband'][previous]
 
-            if not df['in_uptrend'][current] and df['upperrband'][current] > df['upperband'][previous]:
-                df['lowerband'][current] = df['upperband'][previous]
+            if not df['in_uptrend'][current] and df['upperband'][current] > df['upperband'][previous]:
+                df['upperband'][current] = df['upperband'][previous]
+        
+    return df
 
+in_position = False
 
-        #print(current)
+def check_buy_sell_signals(df):
+    global in_position
 
-    #return df
+    print("checking for buy and sell positions")
+    print(df.tail(5))
+    last_row_index = len(df.index) - 1
+    previous_row_index = last_row_index - 1
 
+    if not df['in_uptrend']['previous_row_index'] and df['in_uptrend'][last_row_index]:
+        print("changed to uptrend, buy")
+        if not in_position:
+            order = exchange.create_market_buy_order('ADA/USDT', 0.05)
+            print(order)
+            in_position = True
+        else:
+            print("already in position, wait")
     
-#print(supertrend(df))
+    if df['in_uptrend'][previous_row_index] and not df['in_uptrend'][last_row_index]:
+        if in_position:
+            print("changed to downtrend, sell")
+            order = exchange.create_market_sell_order('ETH/USD', 0.05)
+            print(order)
+            in_position = False
+        else:
+            print("You aren't in position, wait")
 
-#atr(df, period=5)
+def run_bot():
+    print(f"Fetching new bars for {datetime.now().isoformat()}")
+    bars = exchange.fetch_ohlcv('ADA/USDT', timeframe='1m', limit= 100)
+    df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-#print(df)
+    supertrend_data = supertrend(df)
 
+    check_buy_sell_signals(supertrend_data)
 
+schedule.every(10).seconds.do(run_bot)
 
-
-
-
-
-#print(df)
-
-#for bar in bars:
-#    print(bar)
-
-#bb_indicator = BollingerBands(df['close'])
-
-#df['upper_band'] = bb_indicator.bollinger_hband()
-#df['lower_band'] = bb_indicator.bollinger_lband()
-#df['moving_average'] = bb_indicator.bollinger_mavg()
-
-#print(df)
-
-#atr_indicator = AverageTrueRange(df['high'], df['low'], df['close'])
-
-#df['atr'] = atr_indicator.average_true_range()
-
-#print(df)
-
-
-
-
-
-
-
-
-
-
-#balances = exchange.fetch_balance()
-#print(balances['total']['USDT'])
-
-#order = exchange.create_market_buy_order('ADA/USDT', 0.01)
-#print(order)
-
-
-# print(ccxt.exchanges) 
-# for exchange in ccxt.exchanges:
-#     print(exchange) 
-
-#markets = exchange.load_markets()
-
-#exchange = ccxt.binance()
-#print(exchange)
-#markets = exchange.load_markets()
-
-#ohlc = exchange.fetch_ohlcv('ETH/USDT')
-
-#for candle in ohlc:
-#    print(candle)
-
-#for market in markets:
-#   print(market)
-
+while True:
+    schedule.run_pending()
+    time.sleep(1)
 
